@@ -135,7 +135,6 @@ export default definePluginEntry({
   name: 'Tutor',
   description: 'Agent-scoped topic notes, assessment dates, and on-demand two-day study guides; no calendar writes or background scan.',
   register(api) {
-    let service: TutorService | undefined;
     api.registerTool(
       {
         contextVersion: 2,
@@ -149,11 +148,11 @@ export default definePluginEntry({
             parameters: definition.parameters,
             async execute(_id: string, params: Record<string, unknown>, signal?: AbortSignal) {
               context.assertInvocationCurrent();
-              service ??= new TutorService(
-                api.runtime.state.openKeyedStoreV2<TutorState>({
-                  namespace: 'tutor-state',
-                  retention: 'retained',
-                }),
+              const service = new TutorService(
+                api.runtime.state.openKeyedStoreV2<TutorState>(
+                  { namespace: 'tutor-state', retention: 'retained' },
+                  { assertCurrent: context.assertInvocationCurrent },
+                ),
               );
               const result = await definition.run(service, params, {
                 agentId,

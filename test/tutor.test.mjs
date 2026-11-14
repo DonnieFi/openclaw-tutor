@@ -1,22 +1,47 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { TutorService } from '../dist/service.js';
+import { MAX_COMMIT_ATTEMPTS, TutorService } from '../dist/service.js';
 import { resolveCalendarDate } from '../dist/validate.js';
 
 const NOW = Date.parse('2026-11-14T12:00:00Z');
 const calendarFixture = JSON.parse(await readFile(new URL('./fixtures/calendar-items.json', import.meta.url), 'utf8'));
 
-function store(initial = new Map()) {
-  const values = initial;
+function store(initial = new Map(), hooks = {}) {
+  const entries = new Map(
+    [...initial.entries()].map(([key, value], index) => [
+      key,
+      { value: structuredClone(value), version: index + 1 },
+    ]),
+  );
+  let nextVersion = entries.size + 1;
+  const observeKey = (key) => {
+    const entry = entries.get(key);
+    return {
+      value: entry ? structuredClone(entry.value) : undefined,
+      comparison: entry ? String(entry.version) : 'missing',
+    };
+  };
   return {
-    values,
-    async lookup(key) {
-      return values.get(key);
+    entries,
+    values: {
+      get size() { return entries.size; },
+      get: (key) => entries.get(key)?.value,
     },
-    async register(key, value, opts) {
-      opts?.assertCurrent?.();
-      values.set(key, structuredClone(value));
+    async observe(key) {
+      await hooks.onObserve?.(key);
+      return observeKey(key);
+    },
+    async compareAndApply(key, comparison, intent) {
+      await hooks.onCompare?.(key, comparison, intent, entries);
+      const current = observeKey(key);
+      if (comparison !== current.comparison) return { status: 'conflict', current };
+      if (intent.operation === 'update' && intent.action === 'set') {
+        nextVersion += 1;
+        entries.set(key, { value: structuredClone(intent.value), version: nextVersion });
+        return { status: 'applied' };
+      }
+      return { status: 'unchanged' };
     },
   };
 }
@@ -268,4 +293,84 @@ test('topic matching falls back to title words when the subject differs', async 
   await service.saveAssessment({ subject: 'Science', title: 'Cell division quiz', date: '2026-11-15' }, scope());
   const result = await service.getDueStudyGuides({}, scope());
   assert.match(result.guides[0].markdown, /Mitosis has phases/);
+});
+
+test('interleaved same-agent writes across topics and assessments both persist', async () => {
+  let observes = 0;
+  let release;
+  const bothObserved = new Promise((resolve) => { release = resolve; });
+  const backing = store(new Map(), {
+    async onObserve() {
+      observes += 1;
+      if (observes === 2) release();
+      await bothObserved;
+    },
+  });
+  const service = new TutorService(backing, () => NOW);
+  const [topicRes, assessmentRes] = await Promise.all([
+    service.saveTopic({ subject: 'Math', title: 'Fractions', notes: 'Numerator over denominator' }, scope('alice')),
+    service.saveAssessment({ subject: 'Math', title: 'Quiz 1', date: '2026-11-18' }, scope('alice')),
+  ]);
+  assert.equal(topicRes.saved, true);
+  assert.equal(assessmentRes.saved, true);
+  assert.deepEqual((await service.listTopics({}, scope('alice'))).topics.map((t) => t.title), ['Fractions']);
+  assert.deepEqual((await service.listAssessments({}, scope('alice'))).assessments.map((a) => a.title), ['Quiz 1']);
+
+  observes = 0;
+  let releaseSecond;
+  const secondObserved = new Promise((resolve) => { releaseSecond = resolve; });
+  const sharedStore = store(new Map(), {
+    async onObserve() {
+      observes += 1;
+      if (observes === 2) releaseSecond();
+      await secondObserved;
+    },
+  });
+  const sharedService = new TutorService(sharedStore, () => NOW);
+  await Promise.all([
+    sharedService.saveTopic({ subject: 'Math', title: 'Fractions', notes: 'Parts of a whole' }, scope('alice')),
+    sharedService.saveTopic({ subject: 'Science', title: 'Photosynthesis', notes: 'Uses sunlight' }, scope('alice')),
+  ]);
+  assert.deepEqual(
+    (await sharedService.listTopics({}, scope('alice'))).topics.map((t) => t.title),
+    ['Fractions', 'Photosynthesis'],
+  );
+  assert.equal((await sharedService.listTopics({}, scope('bob'))).count, 0);
+});
+
+test('bounded conflict handling rejects runaway contention and mid-flight revocation', async () => {
+  let bumps = 0;
+  let version = 100;
+  const contended = {
+    async observe() {
+      return { value: undefined, comparison: `v${version}` };
+    },
+    async compareAndApply() {
+      bumps += 1;
+      version += 1;
+      return { status: 'conflict', current: { value: undefined, comparison: `v${version}` } };
+    },
+  };
+  const service = new TutorService(contended, () => NOW);
+  await assert.rejects(
+    service.saveTopic({ subject: 'Math', title: 'Angles', notes: 'Right angles are 90 degrees.' }, scope('alice')),
+    /concurrent updates/,
+  );
+  assert.equal(bumps, MAX_COMMIT_ATTEMPTS);
+
+  const backing = store();
+  let calls = 0;
+  const revokingScope = {
+    agentId: 'alice',
+    assertCurrent() {
+      calls += 1;
+      if (calls >= 3) throw new Error('revoked mid-flight');
+    },
+  };
+  const checkedService = new TutorService(backing, () => NOW);
+  await assert.rejects(
+    checkedService.saveTopic({ subject: 'Math', title: 'Angles', notes: '90 degrees' }, revokingScope),
+    /revoked mid-flight/,
+  );
+  assert.equal(backing.values.size, 0);
 });

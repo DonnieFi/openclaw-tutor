@@ -49,9 +49,28 @@ export type TutorState = {
   guides: StudyGuide[];
 };
 
+export type KeyedStoreObservation<T> = {
+  value: T | undefined;
+  comparison: string;
+};
+
+export type KeyedStoreCompareIntent<T> =
+  | { operation: 'update'; action: 'set'; value: T; ttlMs?: number }
+  | { operation: 'update' | 'delete'; action: 'keep' }
+  | { operation: 'delete'; action: 'delete' };
+
+export type KeyedStoreCompareResult<T> =
+  | { status: 'applied' | 'unchanged' }
+  | { status: 'conflict'; current: KeyedStoreObservation<T> };
+
+/** The subset of the host v2 keyed store this plugin uses. */
 export type KeyedStore<T> = {
-  lookup(key: string): Promise<T | undefined>;
-  register(key: string, value: T, opts?: { assertCurrent?: () => void }): Promise<void>;
+  observe(key: string): Promise<KeyedStoreObservation<T>>;
+  compareAndApply(
+    key: string,
+    comparison: string,
+    intent: KeyedStoreCompareIntent<T>,
+  ): Promise<KeyedStoreCompareResult<T>>;
 };
 
 export type CallScope = {
