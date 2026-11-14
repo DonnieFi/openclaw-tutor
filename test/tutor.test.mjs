@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { TutorService } from '../dist/service.js';
 
 const NOW = Date.parse('2026-11-14T12:00:00Z');
+const calendarFixture = JSON.parse(await readFile(new URL('./fixtures/calendar-items.json', import.meta.url), 'utf8'));
 
 function store(initial = new Map()) {
   const values = initial;
@@ -170,15 +172,16 @@ test('a due guide is built on demand, stored, and reused unchanged until the dat
   assert.equal((await service.listAssessments({ days: 30 }, scope())).assessments.length, 0);
 });
 
-test('calendar items can be the only source of a due guide, and an empty topic still gets a guide', async () => {
+test('calendar fixtures can be the only source of a due guide, and an empty topic still gets a guide', async () => {
   const backing = store();
   const service = new TutorService(backing, () => NOW);
-  const due = await service.getDueStudyGuides({
-    calendarItems: [{ title: 'Math quiz', date: '2026-11-16', subject: 'Math', source: 'family_schedule' }],
-  }, scope());
+  const due = await service.getDueStudyGuides({ calendarItems: [calendarFixture[0]] }, scope());
   assert.equal(due.guides.length, 1);
   assert.match(due.guides[0].markdown, /No topic notes are saved/);
   assert.equal(due.calendarItemsConsidered, 1);
+  const listed = await service.listAssessments({ days: 7, calendarItems: calendarFixture }, scope());
+  assert.deepEqual(listed.assessments.map((assessment) => assessment.title), ['Math quiz', 'Science test']);
+  assert.equal(listed.assessments[0].time, '8:05 AM');
   assert.equal((await service.listAssessments({ days: 30 }, scope())).assessments.length, 0);
 });
 

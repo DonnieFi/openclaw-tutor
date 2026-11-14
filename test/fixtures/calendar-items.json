@@ -1,0 +1,15 @@
+[
+  {
+    "title": "Math quiz",
+    "date": "2026-11-16",
+    "time": "8:05 AM",
+    "subject": "Math",
+    "source": "family_schedule"
+  },
+  {
+    "title": "Science test",
+    "date": "2026-11-18",
+    "subject": "Science",
+    "source": "family_schedule"
+  }
+]
