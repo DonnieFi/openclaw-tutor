@@ -16,8 +16,8 @@ release or a production-readiness claim.
   `inspect`, and `build` passed with one skill, one plugin, zero MCP servers,
   zero automations, 11 preview actions, 3 capability escalations, and 0 blocked
   actions.
-- Template archive integrity:
-  `sha256:7f3b408eacc3094d257f6fa27b930c09ac5f1245fbbf2c03297e78a991fdfc8e`.
+- The bundled Template archive integrity is recorded in the template
+  repository's verification record, not pinned in this source repository.
 
 ## Package artifact
 
