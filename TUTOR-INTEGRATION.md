@@ -1,6 +1,6 @@
 # Tutor hookup contract
 
-Plugin id: `tutor`. Package: `openclaw-tutor-plugin`, version `0.1.0`. There is no
+Plugin id: `tutor-study`. Package: `openclaw-tutor-plugin`, version `0.1.0`. There is no
 published ClawHub coordinate yet. Do not invent one.
 
 ## Native tools
@@ -33,7 +33,7 @@ For bundled delivery, `CLAW.md` declares:
     plugins:
       - path: plugins/tutor
 
-The template grants the eight tools plus workspace `read` under a minimal profile.
+The template grants the ten tools plus workspace `read` under a minimal profile.
 It does not include `family_schedule` or `family_members` in `alsoAllow`, and it
 does not list Family Pack under `requiresPlugins`.
 
@@ -48,7 +48,7 @@ Pack's `family_schedule` is used:
 - with `query`, every word must appear in the title, so `test quiz exam` matches
   nothing;
 - read sections locally for test, quiz, and exam titles;
-- convert display dates to `YYYY-MM-DD`;
+- pass display dates such as `Fri Oct 9` through; the plugin resolves them and skips an unrecognized item;
 - the calendar remains the date authority;
 - do not create, edit, or delete a calendar event.
 

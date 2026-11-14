@@ -26,6 +26,7 @@ export type CalendarItem = {
 
 export type TutorSetup = {
   calendarTool: string | null;
+  timezone: string | null;
   calendarReminderShownAt: string | null;
   updatedAt: string | null;
 };

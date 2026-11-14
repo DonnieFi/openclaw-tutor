@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { TutorService } from '../dist/service.js';
+import { resolveCalendarDate } from '../dist/validate.js';
 
 const NOW = Date.parse('2026-11-14T12:00:00Z');
 const calendarFixture = JSON.parse(await readFile(new URL('./fixtures/calendar-items.json', import.meta.url), 'utf8'));
@@ -115,7 +116,9 @@ test('list_assessments merges supplied calendar items without turning them into 
   assert.equal(merged.assessments[1].time, '09:00');
   assert.deepEqual(merged.assessments[1].sources.sort(), ['family_schedule', 'tutor']);
   assert.equal((await service.listAssessments({ days: 30 }, scope())).assessments.length, 1);
-  await assert.rejects(service.listAssessments({ calendarItems: [{ title: 'Bad', date: 'Friday' }] }, scope()), /calendarItems\[0\]\.date/);
+  const skipped = await service.listAssessments({ calendarItems: [{ title: 'Bad', date: 'Friday' }] }, scope());
+  assert.equal(skipped.skippedCalendarItems.length, 1);
+  assert.equal(skipped.calendarItemsConsidered, 0);
 });
 
 test('same title and date in different subjects stays separate and merges by subject', async () => {
@@ -208,6 +211,54 @@ test('a revoked invocation stops before setup is written, and corrupt state read
     /revoked/,
   );
   assert.deepEqual(backing.values.get('agent:alice'), { version: 99, topics: 'nope' });
+});
+
+test('display dates resolve near today, and one bad calendar item does not drop the rest', async () => {
+  assert.equal(resolveCalendarDate('Mon Nov 16', '2026-11-14'), '2026-11-16');
+  assert.equal(resolveCalendarDate('Fri Oct 9, 2026', '2026-11-14'), '2026-10-09');
+  assert.equal(resolveCalendarDate('Wed Dec 31', '2026-01-02'), '2025-12-31');
+  const backing = store();
+  const service = new TutorService(backing, () => NOW);
+  await service.saveTopic({ subject: 'Math', title: 'Fractions', notes: 'Parts of a whole.' }, scope());
+  const listed = await service.listAssessments({
+    days: 7,
+    calendarItems: [
+      { title: 'Unit test', date: 'Mon Nov 16', subject: 'Math', source: 'family_schedule' },
+      { title: 'Nope', date: 'not a date', source: 'family_schedule' },
+    ],
+  }, scope());
+  assert.equal(listed.assessments.length, 1);
+  assert.equal(listed.assessments[0].date, '2026-11-16');
+  assert.equal(listed.skippedCalendarItems.length, 1);
+  const guides = await service.getDueStudyGuides({
+    calendarItems: [
+      { title: 'Unit test', date: 'Mon Nov 16', subject: 'Math' },
+      { title: 'Nope', date: 'not a date' },
+    ],
+  }, scope());
+  assert.equal(guides.guides.length, 1);
+  assert.equal(guides.skippedCalendarItems.length, 1);
+});
+
+test('a saved timezone decides today, and topics and assessments can be removed', async () => {
+  const backing = store();
+  const lateUtc = Date.parse('2026-11-15T02:30:00Z');
+  const service = new TutorService(backing, () => lateUtc);
+  await service.saveSetup({ timezone: 'America/Halifax' }, scope());
+  const setup = await service.getSetup(scope());
+  assert.equal(setup.timezone, 'America/Halifax');
+  await service.saveAssessment({ subject: 'Math', title: 'Quiz', date: '2026-11-14' }, scope());
+  const listed = await service.listAssessments({ days: 2 }, scope());
+  assert.equal(listed.today, '2026-11-14');
+  assert.equal(listed.assessments.length, 1);
+  await service.saveTopic({ subject: 'Math', title: 'Quiz notes', notes: 'Practice one problem.' }, scope());
+  const removedTopic = await service.deleteTopic({ subject: 'Math', title: 'Quiz notes' }, scope());
+  assert.equal(removedTopic.removed, true);
+  assert.equal((await service.listTopics({}, scope())).count, 0);
+  const removed = await service.deleteAssessment({ subject: 'Math', title: 'Quiz' }, scope());
+  assert.equal(removed.removed, true);
+  assert.equal((await service.listAssessments({ days: 2 }, scope())).assessments.length, 0);
+  await assert.rejects(service.saveSetup({ timezone: 'Not/AZone' }, scope()), /timezone must be an IANA name/);
 });
 
 test('topic matching falls back to title words when the subject differs', async () => {

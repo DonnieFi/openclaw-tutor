@@ -7,9 +7,11 @@ release or a production-readiness claim.
 
 - Node 26.13.0; OpenClaw CLI 2026.11.3 (`17db247`).
 - `npm install --ignore-scripts`, `npm run build`, and `npm test`.
-- 10/10 tests pass on a supported Node runtime. The tests use a fake keyed store,
+- 12/12 tests pass on a supported Node runtime. The tests use a fake keyed store,
   a fixed clock, and a fictional calendar-item fixture; no calendar, network, or
-  host state is touched.
+  host state is touched. Coverage includes display dates such as `Fri Oct 9`,
+  skipping one unrecognized calendar item, a saved IANA timezone for today, and
+  `delete_topic` / `delete_assessment`.
 - Source typecheck against a local Plugin SDK declaration shim. The installed
   OpenClaw distribution did not include the plugin-entry declaration file.
 - Native Template checks for the bundled copy: `validate`, offline `dev`,
@@ -24,7 +26,7 @@ release or a production-readiness claim.
 `openclaw-tutor-plugin@0.1.0`
 
 SHA-256:
-`132160ed6e734eca5b5ed4f04b37b6337adf57c4d75a87b17434d21cf11fb8`
+`d389213e1e19abecd4c6ba5ae945f98078c7fc0bf3c2360d2346741e16cf4d26`
 
 The package contains compiled ESM, the plugin manifest, package metadata, README,
 and LICENSE. It contains no `node_modules`, test fixture, student record, topic

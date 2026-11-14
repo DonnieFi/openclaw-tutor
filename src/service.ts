@@ -4,7 +4,9 @@ import {
   cleanText,
   isDate,
   isTime,
+  isTimeZone,
   keyOf,
+  resolveCalendarDate,
   normalize,
   optionalText,
   today,
@@ -34,7 +36,7 @@ const MAX_SEARCH_NOTE_CHARS = 3_000;
 export function emptyState(): TutorState {
   return {
     version: 1,
-    setup: { calendarTool: null, calendarReminderShownAt: null, updatedAt: null },
+    setup: { calendarTool: null, timezone: null, calendarReminderShownAt: null, updatedAt: null },
     topics: [],
     assessments: [],
     guides: [],
@@ -102,6 +104,7 @@ export function normalizeState(value: unknown): TutorState {
     version: 1,
     setup: {
       calendarTool: typeof setup.calendarTool === 'string' ? setup.calendarTool : null,
+      timezone: typeof setup.timezone === 'string' ? setup.timezone : null,
       calendarReminderShownAt: typeof setup.calendarReminderShownAt === 'string' ? setup.calendarReminderShownAt : null,
       updatedAt: typeof setup.updatedAt === 'string' ? setup.updatedAt : null,
     },
@@ -138,23 +141,43 @@ function summary(topic: Topic) {
   };
 }
 
-function cleanCalendarItem(item: CalendarItem, index: number): CalendarItem {
-  if (!isDate(item.date)) throw new Error(`calendarItems[${index}].date must be a real date in YYYY-MM-DD form.`);
-  const time = optionalText(item.time, 16);
-  if (time !== null && !isTime(time)) throw new Error(`calendarItems[${index}].time must look like 08:05 or 8:05 AM.`);
-  return {
-    title: cleanText(item.title, `calendarItems[${index}].title`, 200),
-    date: item.date,
-    ...(time === null ? {} : { time }),
-    ...(item.subject === undefined ? {} : { subject: cleanText(item.subject, `calendarItems[${index}].subject`, 60) }),
-    ...(item.source === undefined ? {} : { source: cleanText(item.source, `calendarItems[${index}].source`, 40) }),
-  };
-}
-
-function cleanCalendar(items: CalendarItem[] | undefined): CalendarItem[] {
-  if (!items) return [];
+function cleanCalendar(items: CalendarItem[] | undefined, todayIso: string): {
+  items: CalendarItem[];
+  skipped: { index: number; date: string; reason: string }[];
+} {
+  if (!items) return { items: [], skipped: [] };
   if (items.length > MAX_CALENDAR_ITEMS) throw new Error(`calendarItems is limited to ${MAX_CALENDAR_ITEMS} items.`);
-  return items.map(cleanCalendarItem);
+  const cleaned: CalendarItem[] = [];
+  const skipped: { index: number; date: string; reason: string }[] = [];
+  items.forEach((item, index) => {
+    const rawDate = typeof item.date === 'string' ? item.date : '';
+    const date = resolveCalendarDate(rawDate, todayIso);
+    if (!date) {
+      skipped.push({ index, date: rawDate, reason: 'Unrecognized date. Use YYYY-MM-DD or a display date such as Fri Oct 9.' });
+      return;
+    }
+    const time = optionalText(item.time, 16);
+    if (time !== null && !isTime(time)) {
+      skipped.push({ index, date: rawDate, reason: 'Time must look like 08:05 or 8:05 AM.' });
+      return;
+    }
+    let subject: string | undefined;
+    let source: string | undefined;
+    try {
+      if (item.subject !== undefined) subject = cleanText(item.subject, 'subject', 60);
+      if (item.source !== undefined) source = cleanText(item.source, 'source', 40);
+      cleaned.push({
+        title: cleanText(item.title, 'title', 200),
+        date,
+        ...(time === null ? {} : { time }),
+        ...(subject === undefined ? {} : { subject }),
+        ...(source === undefined ? {} : { source }),
+      });
+    } catch (error) {
+      skipped.push({ index, date: rawDate, reason: error instanceof Error ? error.message : 'Invalid calendar item.' });
+    }
+  });
+  return { items: cleaned, skipped };
 }
 
 export class TutorService {
@@ -180,7 +203,7 @@ export class TutorService {
   }
 
   private merge(state: TutorState, calendarItems: CalendarItem[], days: number) {
-    const current = today(this.now());
+    const current = today(this.now(), state.setup.timezone);
     const end = addDays(current, days);
     const map = new Map<string, MergedAssessment>();
     for (const assessment of state.assessments) {
@@ -241,9 +264,10 @@ export class TutorService {
 
   async getSetup(scope: CallScope) {
     const state = await this.load(scope);
-    const current = today(this.now());
+    const current = today(this.now(), state.setup.timezone);
     return {
       calendarTool: state.setup.calendarTool,
+      timezone: state.setup.timezone,
       calendarAvailable: Boolean(state.setup.calendarTool),
       topics: state.topics.length,
       assessments: state.assessments.length,
@@ -255,8 +279,16 @@ export class TutorService {
     };
   }
 
-  async saveSetup(input: { calendarTool?: string | null }, scope: CallScope) {
+  async saveSetup(input: { calendarTool?: string | null; timezone?: string | null }, scope: CallScope) {
     const state = await this.load(scope);
+    if (input.timezone !== undefined) {
+      if (input.timezone === null || input.timezone.trim() === '') state.setup.timezone = null;
+      else {
+        const zone = input.timezone.trim();
+        if (!isTimeZone(zone)) throw new Error('timezone must be an IANA name such as America/Halifax, or null to use the gateway host clock.');
+        state.setup.timezone = zone;
+      }
+    }
     if (input.calendarTool !== undefined) {
       const value = input.calendarTool === null ? null : input.calendarTool.trim();
       state.setup.calendarTool = value ? cleanText(value, 'calendarTool', 64) : null;
@@ -273,6 +305,7 @@ export class TutorService {
     await this.save(state, scope);
     return {
       calendarTool: state.setup.calendarTool,
+      timezone: state.setup.timezone,
       calendarAvailable: Boolean(state.setup.calendarTool),
       topics: state.topics.length,
       assessments: state.assessments.length,
@@ -363,15 +396,16 @@ export class TutorService {
   async listAssessments(input: { days?: number; calendarItems?: CalendarItem[] }, scope: CallScope) {
     const days = input.days ?? 30;
     if (!Number.isInteger(days) || days < 1 || days > 90) throw new Error('days must be between 1 and 90.');
-    const calendarItems = cleanCalendar(input.calendarItems);
     const state = await this.load(scope);
-    const merged = this.merge(state, calendarItems, days);
+    const calendar = cleanCalendar(input.calendarItems, today(this.now(), state.setup.timezone));
+    const merged = this.merge(state, calendar.items, days);
     return {
       today: merged.current,
       through: merged.end,
       days,
       assessments: merged.items,
-      calendarItemsConsidered: calendarItems.length,
+      calendarItemsConsidered: calendar.items.length,
+      skippedCalendarItems: calendar.skipped,
       note: merged.items.length
         ? 'Hand-entered dates and supplied calendar items are merged; the calendar remains the date authority.'
         : 'No assessments in that range. Add a date or pass calendar items.',
@@ -406,6 +440,31 @@ export class TutorService {
     }
     await this.save(state, scope);
     return { saved: true, assessment, count: state.assessments.length };
+  }
+
+  async deleteTopic(input: { subject: string; title: string }, scope: CallScope) {
+    const subject = cleanText(input.subject, 'subject', 60);
+    const title = cleanText(input.title, 'title', 120);
+    const state = await this.load(scope);
+    const key = keyOf(subject, title);
+    const index = state.topics.findIndex((topic) => keyOf(topic.subject, topic.title) === key);
+    if (index === -1) return { removed: false, note: 'No saved topic matched that subject and title.' };
+    const [removed] = state.topics.splice(index, 1);
+    await this.save(state, scope);
+    return { removed: true, topic: summary(removed!), count: state.topics.length };
+  }
+
+  async deleteAssessment(input: { subject: string; title: string }, scope: CallScope) {
+    const subject = cleanText(input.subject, 'subject', 60);
+    const title = cleanText(input.title, 'title', 120);
+    const state = await this.load(scope);
+    const key = keyOf(subject, title);
+    const index = state.assessments.findIndex((assessment) => keyOf(assessment.subject, assessment.title) === key);
+    if (index === -1) return { removed: false, note: 'No saved assessment matched that subject and title.' };
+    const [removed] = state.assessments.splice(index, 1);
+    state.guides = state.guides.filter((guide) => keyOf(guide.subject, guide.title) !== key);
+    await this.save(state, scope);
+    return { removed: true, assessment: removed, count: state.assessments.length };
   }
 
   private topicsFor(state: TutorState, assessment: MergedAssessment): Topic[] {
@@ -459,7 +518,7 @@ export class TutorService {
       '- Confirm the date, time, and what materials are allowed with your teacher.',
       '- Ask the tutor to quiz you or explain one part. This guide is not a finished assignment.',
       '',
-      `_Built from saved notes on ${today(this.now())}. It is a starting point, not an answer key._`,
+      `_Built from saved notes on ${today(this.now(), state.setup.timezone)}. It is a starting point, not an answer key._`,
     ].join('\n');
     return {
       key: keyOf(assessment.subject, assessment.title, assessment.date),
@@ -473,9 +532,9 @@ export class TutorService {
   }
 
   async getDueStudyGuides(input: { calendarItems?: CalendarItem[] }, scope: CallScope) {
-    const calendarItems = cleanCalendar(input.calendarItems);
     const state = await this.load(scope);
-    const merged = this.merge(state, calendarItems, DUE_DAYS);
+    const calendar = cleanCalendar(input.calendarItems, today(this.now(), state.setup.timezone));
+    const merged = this.merge(state, calendar.items, DUE_DAYS);
     const due = merged.items.filter((assessment) => assessment.date >= merged.current && assessment.date <= merged.end);
     const before = state.guides.length;
     state.guides = state.guides.filter((guide) => guide.date >= merged.current).slice(-MAX_GUIDES);
@@ -493,7 +552,8 @@ export class TutorService {
       today: merged.current,
       dueWindow: { from: merged.current, through: merged.end },
       guides,
-      calendarItemsConsidered: calendarItems.length,
+      calendarItemsConsidered: calendar.items.length,
+      skippedCalendarItems: calendar.skipped,
       note: guides.length
         ? 'A stored guide is returned unchanged until its assessment date passes. Use it as a starting point, not a finished assignment.'
         : 'No assessment is in the next two days. Keep using topic search; a guide is built when one is due.',
