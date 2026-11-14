@@ -116,6 +116,28 @@ test('list_assessments merges supplied calendar items without turning them into 
   await assert.rejects(service.listAssessments({ calendarItems: [{ title: 'Bad', date: 'Friday' }] }, scope()), /calendarItems\[0\]\.date/);
 });
 
+test('same title and date in different subjects stays separate and merges by subject', async () => {
+  const backing = store();
+  const { service } = { service: new TutorService(backing, () => NOW) };
+  await service.saveAssessment({ subject: 'Math', title: 'Unit test', date: '2026-11-20' }, scope());
+  await service.saveAssessment({ subject: 'Science', title: 'Unit test', date: '2026-11-20' }, scope());
+  const merged = await service.listAssessments({
+    days: 30,
+    calendarItems: [{ title: 'Unit test', date: '2026-11-20', subject: 'Math', source: 'family_schedule' }],
+  }, scope());
+  assert.equal(merged.assessments.length, 2);
+  assert.deepEqual(merged.assessments.map((assessment) => [assessment.subject, assessment.source]), [
+    ['Math', 'both'],
+    ['Science', 'tutor'],
+  ]);
+  const ambiguous = await service.listAssessments({
+    days: 30,
+    calendarItems: [{ title: 'Unit test', date: '2026-11-20', source: 'family_schedule' }],
+  }, scope());
+  assert.equal(ambiguous.assessments.length, 3);
+  assert.equal(ambiguous.assessments.filter((assessment) => assessment.source === 'calendar').length, 1);
+});
+
 test('a due guide is built on demand, stored, and reused unchanged until the date passes', async () => {
   const backing = store();
   const time = clock();
