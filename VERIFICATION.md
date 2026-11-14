@@ -17,7 +17,7 @@ release or a production-readiness claim.
   zero automations, 11 preview actions, 3 capability escalations, and 0 blocked
   actions.
 - Template archive integrity:
-  `sha256:54083b17dbc2d2dc888d72c66a62034afebd9dad6e5213b5a24d195bab776bb1`.
+  `sha256:7f3b408eacc3094d257f6fa27b930c09ac5f1245fbbf2c03297e78a991fdfc8e`.
 
 ## Package artifact
 
